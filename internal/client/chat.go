@@ -1,0 +1,174 @@
+package client
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"time"
+)
+
+type ChatClient struct {
+	baseURL    string
+	authToken  string
+	httpClient *http.Client
+	logger     *slog.Logger
+}
+
+func NewChatClient(baseURL, authToken string, logger *slog.Logger) *ChatClient {
+	return &ChatClient{
+		baseURL:   baseURL,
+		authToken: authToken,
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+		},
+		logger: logger,
+	}
+}
+
+func (c *ChatClient) SetAuthToken(token string) {
+	c.authToken = token
+}
+
+func (c *ChatClient) SendMessage(chatID string, fragments []ChatMessageFragment, agentConfig map[string]any) (*ChatResponse, error) {
+	req := ChatRequest{
+		ChatID: chatID,
+		Messages: []ChatMessage{
+			{
+				Author:      "USER",
+				Fragments:   fragments,
+				MessageType: "TOOL_USE",
+				Platform:    "DESKTOP",
+			},
+		},
+		MessageType: "TOOL_USE",
+		AgentConfig: agentConfig,
+		Stream:      false,
+	}
+
+	return c.sendChatRequest(req)
+}
+
+func (c *ChatClient) SendToolResults(chatID string, results []ClientToolUseResult, agentConfig map[string]any) (*ChatResponse, error) {
+	fragments := make([]ChatMessageFragment, len(results))
+	for i, r := range results {
+		r := r
+		fragments[i] = ChatMessageFragment{
+			ToolUseResult: &r,
+		}
+	}
+	return c.SendMessage(chatID, fragments, agentConfig)
+}
+
+func (c *ChatClient) StreamChatRequest(req ChatRequest) (<-chan ChatResponse, <-chan error) {
+	responseCh := make(chan ChatResponse, 10)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(responseCh)
+		defer close(errCh)
+
+		req.Stream = true
+
+		body, err := json.Marshal(req)
+		if err != nil {
+			errCh <- fmt.Errorf("marshaling request: %w", err)
+			return
+		}
+
+		httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/chat", bytes.NewReader(body))
+		if err != nil {
+			errCh <- fmt.Errorf("creating request: %w", err)
+			return
+		}
+		c.setHeaders(httpReq)
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			errCh <- fmt.Errorf("sending request: %w", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			errCh <- fmt.Errorf("chat API returned %d: %s", resp.StatusCode, string(bodyBytes))
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+
+			var chatResp ChatResponse
+			if err := json.Unmarshal([]byte(line), &chatResp); err != nil {
+				c.logger.Debug("skipping non-JSON line in stream", "line", line)
+				continue
+			}
+			responseCh <- chatResp
+		}
+
+		if err := scanner.Err(); err != nil {
+			errCh <- fmt.Errorf("reading stream: %w", err)
+		}
+	}()
+
+	return responseCh, errCh
+}
+
+func (c *ChatClient) sendChatRequest(req ChatRequest) (*ChatResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/chat", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	c.setHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("chat API returned %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var chatResp ChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+
+	return &chatResp, nil
+}
+
+func (c *ChatClient) setHeaders(req *http.Request) {
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.authToken)
+	req.Header.Set("X-Glean-Client", "gleand/0.1.0")
+}
+
+func ExtractToolRequests(resp *ChatResponse) []ClientToolUseRequest {
+	var requests []ClientToolUseRequest
+	for _, msg := range resp.Messages {
+		for _, f := range msg.Fragments {
+			if f.ToolUse != nil {
+				requests = append(requests, *f.ToolUse)
+			}
+		}
+	}
+	return requests
+}
