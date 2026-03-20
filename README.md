@@ -68,6 +68,28 @@ Useful flags:
 
 You can also provide `GLEAN_AUTH_TOKEN` via env.
 
+## Interactive mode
+
+Run:
+
+```bash
+./gleand --interactive
+```
+
+While running in the interactive REPL, these slash commands are available:
+
+- `/help` show help
+- `/tools` list registered tools
+- `/new` start a new chat session
+- `/id` show the current chat ID
+- `/debug` show debug mode status
+- `/debug on` enable debug logging
+- `/debug off` disable debug logging
+- `/quit` exit interactive mode
+- `/exit` exit interactive mode
+
+Any non-slash input is sent to Glean Assistant. If the assistant requests a local tool, `gleand` executes it and sends the result back automatically.
+
 ## Notes
 
 - The repo currently ignores the root `gleand` binary and `dist/` build artifacts.
