@@ -152,12 +152,20 @@ func (d *Daemon) streamAndHandle(ctx context.Context, req client.ChatRequest, ro
 		d.logger.Debug("sending chat request", "round", round, "payload", string(reqJSON))
 	}
 
+	spin := newSpinner()
+	if round == 0 {
+		spin.Start("thinking...")
+	} else {
+		spin.Start("processing tool results...")
+	}
+
 	respCh, errCh := d.getChatClient().StreamChatRequest(req)
 
 	var lastChatID string
 	var allText strings.Builder
 	var toolRequests []client.ClientToolUseRequest
 	var lastAgentConfig map[string]any
+	gotFirstContent := false
 
 	for resp := range respCh {
 		if resp.ChatID != "" {
@@ -171,10 +179,18 @@ func (d *Daemon) streamAndHandle(ctx context.Context, req client.ChatRequest, ro
 			}
 			for _, f := range msg.Fragments {
 				if f.Text != "" {
+					if !gotFirstContent {
+						spin.Stop()
+						gotFirstContent = true
+					}
 					fmt.Print(f.Text)
 					allText.WriteString(f.Text)
 				}
 				if f.ToolUse != nil {
+					if !gotFirstContent {
+						spin.Stop()
+						gotFirstContent = true
+					}
 					d.logger.Debug("received tool request", "tool_id", f.ToolUse.ToolID, "run_id", f.ToolUse.RunID)
 					toolRequests = append(toolRequests, *f.ToolUse)
 				}
@@ -184,6 +200,8 @@ func (d *Daemon) streamAndHandle(ctx context.Context, req client.ChatRequest, ro
 			}
 		}
 	}
+
+	spin.Stop()
 
 	if err := <-errCh; err != nil {
 		return lastChatID, err
