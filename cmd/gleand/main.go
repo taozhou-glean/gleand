@@ -19,6 +19,7 @@ func main() {
 		authToken   = flag.String("token", "", "OAuth bearer token (overrides config)")
 		scParams    = flag.String("sc", "", "Additional sc params for the chat API")
 		interactive = flag.Bool("interactive", false, "Run in interactive REPL mode for E2E testing")
+		chatID      = flag.String("chat-id", "", "Resume an existing chat session by ID")
 		debug       = flag.Bool("debug", false, "Enable debug logging with colored output")
 		showVer     = flag.Bool("version", false, "Print version and exit")
 		listTools   = flag.Bool("list-tools", false, "List registered tools and exit")
@@ -78,8 +79,8 @@ func main() {
 	d := daemon.New(cfg, logger)
 
 	var runErr error
-	if *interactive {
-		runErr = d.RunInteractive(context.Background())
+	if *interactive || *chatID != "" {
+		runErr = d.RunInteractiveWithChatID(context.Background(), *chatID)
 	} else {
 		runErr = d.Run(context.Background())
 	}

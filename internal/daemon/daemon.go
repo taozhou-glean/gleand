@@ -24,6 +24,7 @@ type Daemon struct {
 
 	mu             sync.Mutex
 	activeSessions map[string]*sessionState
+	resumeChatID   string
 }
 
 type sessionState struct {

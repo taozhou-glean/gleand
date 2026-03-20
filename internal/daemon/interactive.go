@@ -16,14 +16,17 @@ import (
 	"github.com/nickolasclarke/gleand/internal/tools"
 )
 
-const maxToolRounds = 10
-
 func historyPath() string {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		configDir = filepath.Join(os.Getenv("HOME"), ".config")
 	}
 	return filepath.Join(configDir, "gleand", "history")
+}
+
+func (d *Daemon) RunInteractiveWithChatID(ctx context.Context, chatID string) error {
+	d.resumeChatID = chatID
+	return d.RunInteractive(ctx)
 }
 
 func (d *Daemon) RunInteractive(ctx context.Context) error {
@@ -51,7 +54,10 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 		}
 	}()
 
-	var chatID string
+	chatID := d.resumeChatID
+	if chatID != "" {
+		fmt.Printf("Resuming chat: %s\n", chatID)
+	}
 
 	for {
 		fmt.Println()
@@ -140,9 +146,6 @@ func (d *Daemon) sendChat(ctx context.Context, chatID, message string) (string, 
 }
 
 func (d *Daemon) streamAndHandle(ctx context.Context, req client.ChatRequest, round int) (string, error) {
-	if round >= maxToolRounds {
-		return req.ChatID, fmt.Errorf("exceeded maximum tool execution rounds (%d)", maxToolRounds)
-	}
 
 	if d.cfg.Debug {
 		reqJSON, _ := json.MarshalIndent(req, "", "  ")
