@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-	"golang.org/x/term"
 )
 
 const (
@@ -43,13 +42,13 @@ func (w *escWatcher) Stop() {
 }
 
 func (w *escWatcher) watch() {
-	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
 		return
 	}
+	defer tty.Close()
 
-	// Save and modify termios: disable ICANON+ECHO for char-by-char input
-	// but keep OPOST so output newlines still produce \r\n.
+	fd := int(tty.Fd())
 	oldTermios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
 	if err != nil {
 		return
@@ -74,7 +73,7 @@ func (w *escWatcher) watch() {
 			return
 		}
 
-		n, err := os.Stdin.Read(buf)
+		n, err := tty.Read(buf)
 		if n == 0 || err != nil {
 			time.Sleep(50 * time.Millisecond)
 			continue
