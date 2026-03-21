@@ -39,9 +39,11 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 	}
 
 	d.printBanner()
+	d.connectMCPAsync(ctx)
 
 	line := liner.NewLiner()
 	defer line.Close()
+	defer d.MCP.DisconnectAll()
 	line.SetCtrlCAborts(true)
 	line.SetMultiLineMode(true)
 
@@ -150,6 +152,15 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 		if strings.HasPrefix(input, "/sc ") {
 			d.cfg.ScParams = strings.TrimPrefix(input, "/sc ")
 			fmt.Printf("SC set to: %s\n", d.cfg.ScParams)
+			continue
+		}
+
+		if input == "/mcp" || input == "/mcp list" {
+			d.printMCPServers()
+			continue
+		}
+		if strings.HasPrefix(input, "/mcp ") {
+			d.handleMCPCommand(ctx, strings.TrimPrefix(input, "/mcp "))
 			continue
 		}
 
@@ -453,14 +464,29 @@ func (d *Daemon) executeToolRequests(requests []client.ClientToolUseRequest) []c
 
 func (d *Daemon) buildClientTools() []client.ClientTool {
 	defs := d.registry.Definitions()
-	clientTools := make([]client.ClientTool, len(defs))
-	for i, def := range defs {
-		clientTools[i] = client.ClientTool{
+	clientTools := make([]client.ClientTool, 0, len(defs))
+	for _, def := range defs {
+		schema := toolSchemaToMap(def.InputSchema)
+		// Ensure schema always has "type":"object" — backend requires it
+		if schema["type"] == nil || schema["type"] == "" {
+			schema["type"] = "object"
+		}
+		if schema["properties"] == nil {
+			schema["properties"] = map[string]any{}
+		}
+
+		ct := client.ClientTool{
 			ID:          def.ToolID,
 			Name:        def.Name,
 			Description: def.Description,
-			InputSchema: toolSchemaToMap(def.InputSchema),
+			InputSchema: schema,
 		}
+
+		if d.cfg.Debug {
+			d.logger.Debug("registering client tool", "tool_id", def.ToolID, "name", def.Name)
+		}
+
+		clientTools = append(clientTools, ct)
 	}
 	return clientTools
 }
@@ -485,6 +511,59 @@ func toolSchemaToMap(schema tools.ToolSchema) map[string]any {
 		m["required"] = schema.Required
 	}
 	return m
+}
+
+func (d *Daemon) connectMCPAsync(ctx context.Context) {
+	configs := d.MCP.Configs()
+	enabled := 0
+	for _, c := range configs {
+		if c.Enabled {
+			enabled++
+		}
+	}
+	if enabled == 0 {
+		return
+	}
+
+	mcpDone := make(chan struct{})
+	go func() {
+		defer close(mcpDone)
+		for _, cfg := range configs {
+			if !cfg.Enabled {
+				continue
+			}
+
+			stopSpin := make(chan struct{})
+			go func(name string) {
+				i := 0
+				for {
+					select {
+					case <-stopSpin:
+						return
+					default:
+						fmt.Printf("\r\033[K\033[2m  %s connecting %s...\033[0m",
+							spinnerFrames[i%len(spinnerFrames)], name)
+						i++
+						time.Sleep(80 * time.Millisecond)
+					}
+				}
+			}(cfg.Name)
+
+			_, err := d.MCP.Connect(ctx, cfg.Name)
+			close(stopSpin)
+
+			if err != nil {
+				fmt.Printf("\r\033[K\033[31m  ✗ %s: %s\033[0m\n", cfg.Name, err)
+				continue
+			}
+			d.MCP.RegisterMCPTools(d.registry)
+			fmt.Printf("\r\033[K\033[32m  ✓ %s connected\033[0m\n", cfg.Name)
+		}
+		fmt.Printf("\033[2m  %d tools registered\033[0m", len(d.registry.Definitions()))
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	<-mcpDone
 }
 
 func (d *Daemon) getChatClient() *client.ChatClient {
@@ -532,12 +611,150 @@ func (d *Daemon) printHelp() {
 	fmt.Println("  /auth          - Authenticate via browser OAuth")
 	fmt.Println("  /auth status   - Show token status")
 	fmt.Println("  /auth logout   - Clear saved token")
+	fmt.Println("  /mcp           - List MCP servers")
+	fmt.Println("  /mcp add <name> <cmd> [args] - Add stdio server")
+	fmt.Println("  /mcp addurl <name> <url>     - Add HTTP server")
+	fmt.Println("  /mcp enable|disable <name>   - Toggle server")
+	fmt.Println("  /mcp connect|remove <name>   - Connect/remove")
 	fmt.Println("  /debug [on|off]- Toggle debug logging")
 	fmt.Println("  /quit          - Exit")
 	fmt.Println()
 	fmt.Println("Type any message to send to Glean Assistant.")
 	fmt.Println("If the assistant wants to use a local tool, it will")
 	fmt.Println("be executed automatically and results sent back.")
+}
+
+func (d *Daemon) printMCPServers() {
+	configs := d.MCP.Configs()
+	if len(configs) == 0 {
+		fmt.Println("No MCP servers configured. Use /mcp add <name> <command> [args...]")
+		return
+	}
+
+	fmt.Println("\nMCP servers:")
+	for _, cfg := range configs {
+		status := "\033[31m●\033[0m disabled"
+		if cfg.Enabled {
+			if d.MCP.IsConnected(cfg.Name) {
+				status = "\033[32m●\033[0m connected"
+			} else {
+				status = "\033[33m●\033[0m disconnected"
+			}
+		}
+
+		transport := cfg.Command
+		if len(cfg.Args) > 0 {
+			transport += " " + strings.Join(cfg.Args, " ")
+		}
+		if cfg.URL != "" {
+			transport = cfg.URL
+		}
+		fmt.Printf("  %-16s %s  %s\n", cfg.Name, status, transport)
+	}
+
+	allTools := d.MCP.ConnectedTools()
+	if len(allTools) > 0 {
+		fmt.Println("\nMCP tools:")
+		for server, serverTools := range allTools {
+			for _, t := range serverTools {
+				desc := t.Description
+				if len(desc) > 50 {
+					desc = desc[:50] + "..."
+				}
+				fmt.Printf("  [%s] %-24s %s\n", server, t.Name, desc)
+			}
+		}
+	}
+}
+
+func (d *Daemon) handleMCPCommand(ctx context.Context, args string) {
+	parts := strings.Fields(args)
+	if len(parts) == 0 {
+		d.printMCPServers()
+		return
+	}
+
+	cmd := parts[0]
+	switch cmd {
+	case "add":
+		if len(parts) < 3 {
+			fmt.Println("Usage: /mcp add <name> <command> [args...]")
+			return
+		}
+		name := parts[1]
+		command := parts[2]
+		cmdArgs := parts[3:]
+		if err := d.MCP.Add(name, command, cmdArgs); err != nil {
+			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
+			return
+		}
+		fmt.Printf("Added MCP server %q. Use /mcp connect %s to connect.\n", name, name)
+
+	case "addurl":
+		if len(parts) < 3 {
+			fmt.Println("Usage: /mcp addurl <name> <url>")
+			return
+		}
+		if err := d.MCP.AddURL(parts[1], parts[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
+			return
+		}
+		fmt.Printf("Added MCP server %q. Use /mcp connect %s to connect.\n", parts[1], parts[1])
+
+	case "remove":
+		if len(parts) < 2 {
+			fmt.Println("Usage: /mcp remove <name>")
+			return
+		}
+		if err := d.MCP.Remove(parts[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
+			return
+		}
+		fmt.Printf("Removed MCP server %q.\n", parts[1])
+
+	case "enable":
+		if len(parts) < 2 {
+			fmt.Println("Usage: /mcp enable <name>")
+			return
+		}
+		if err := d.MCP.Enable(parts[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
+			return
+		}
+		fmt.Printf("Enabled %q. Use /mcp connect %s to connect.\n", parts[1], parts[1])
+
+	case "disable":
+		if len(parts) < 2 {
+			fmt.Println("Usage: /mcp disable <name>")
+			return
+		}
+		if err := d.MCP.Disable(parts[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
+			return
+		}
+		fmt.Printf("Disabled %q.\n", parts[1])
+
+	case "connect":
+		if len(parts) < 2 {
+			fmt.Println("Usage: /mcp connect <name>")
+			return
+		}
+		name := parts[1]
+		fmt.Printf("Connecting to %s...\n", name)
+		mcpTools, err := d.MCP.Connect(ctx, name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[error] %s\n", err)
+			return
+		}
+		d.MCP.RegisterMCPTools(d.registry)
+		fmt.Printf("Connected. %d tools available:\n", len(mcpTools))
+		for _, t := range mcpTools {
+			fmt.Printf("  %-24s %s\n", t.Name, t.Description)
+		}
+
+	default:
+		fmt.Printf("Unknown MCP command: %s\nUse /mcp for help.\n", cmd)
+	}
 }
 
 func (d *Daemon) readMultiLineInput(line *liner.State) (string, error) {

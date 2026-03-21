@@ -13,6 +13,7 @@ import (
 
 	"github.com/taozhou/gleand/internal/client"
 	"github.com/taozhou/gleand/internal/config"
+	"github.com/taozhou/gleand/internal/mcpmanager"
 	"github.com/taozhou/gleand/internal/tools"
 )
 
@@ -28,6 +29,7 @@ type Daemon struct {
 	modelSetID     string
 	cachedModels   []client.ModelSet
 	Version        string
+	MCP            *mcpmanager.Manager
 }
 
 type sessionState struct {
@@ -46,12 +48,16 @@ func New(cfg *config.Config, logger *slog.Logger) *Daemon {
 	registry.Register(tools.NewListDirectoryTool(cfg.AllowedPaths))
 	registry.Register(tools.NewSystemInfoTool())
 
+	mcpMgr := mcpmanager.New()
+	mcpMgr.LoadConfigs()
+
 	return &Daemon{
 		cfg:            cfg,
 		chatClient:     chatClient,
 		registry:       registry,
 		logger:         logger,
 		activeSessions: make(map[string]*sessionState),
+		MCP:            mcpMgr,
 	}
 }
 
