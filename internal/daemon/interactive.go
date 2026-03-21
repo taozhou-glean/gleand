@@ -601,6 +601,7 @@ func (d *Daemon) printAuthStatus() {
 	if len(token.RefreshToken) > 0 {
 		hasRefresh = "yes"
 	}
+	fmt.Printf("Token file: %s\n", client.TokenStorePath())
 	fmt.Printf("Token status: %s\n", status)
 	fmt.Printf("Refresh token: %s\n", hasRefresh)
 	if token.ExpiresAt > 0 {
