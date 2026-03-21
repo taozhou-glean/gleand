@@ -16,6 +16,7 @@ type ChatClient struct {
 	authToken  string
 	httpClient *http.Client
 	logger     *slog.Logger
+	useRestAPI bool
 }
 
 func NewChatClient(baseURL, authToken string, logger *slog.Logger) *ChatClient {
@@ -29,6 +30,17 @@ func NewChatClient(baseURL, authToken string, logger *slog.Logger) *ChatClient {
 
 func (c *ChatClient) SetAuthToken(token string) {
 	c.authToken = token
+}
+
+func (c *ChatClient) SetUseRestAPI(use bool) {
+	c.useRestAPI = use
+}
+
+func (c *ChatClient) chatPath() string {
+	if c.useRestAPI {
+		return "/rest/api/v1/chat"
+	}
+	return "/api/v1/chat"
 }
 
 func (c *ChatClient) SendMessage(chatID string, fragments []ChatMessageFragment, agentConfig map[string]any) (*ChatResponse, error) {
@@ -77,7 +89,7 @@ func (c *ChatClient) StreamChatRequest(ctx context.Context, req ChatRequest) (<-
 			return
 		}
 
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/chat", bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+c.chatPath(), bytes.NewReader(body))
 		if err != nil {
 			errCh <- fmt.Errorf("creating request: %w", err)
 			return
@@ -129,7 +141,7 @@ func (c *ChatClient) StreamChatRequest(ctx context.Context, req ChatRequest) (<-
 }
 
 func (c *ChatClient) CancelChat(chatID string) error {
-	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/chat/"+chatID+"/cancel", bytes.NewReader([]byte("{}")))
+	httpReq, err := http.NewRequest("POST", c.baseURL+c.chatPath()+"/"+chatID+"/cancel", bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return fmt.Errorf("creating cancel request: %w", err)
 	}
@@ -154,7 +166,7 @@ func (c *ChatClient) sendChatRequest(req ChatRequest) (*ChatResponse, error) {
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/chat", bytes.NewReader(body))
+	httpReq, err := http.NewRequest("POST", c.baseURL+c.chatPath(), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}

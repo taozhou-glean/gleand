@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/peterh/liner"
 
@@ -30,8 +31,10 @@ func (d *Daemon) RunInteractiveWithChatID(ctx context.Context, chatID string) er
 }
 
 func (d *Daemon) RunInteractive(ctx context.Context) error {
-	if d.cfg.AuthToken == "" {
-		return fmt.Errorf("auth token is required for interactive mode (set via -token flag or GLEAN_AUTH_TOKEN env)")
+	d.tryRestoreAuth()
+
+	if len(d.cfg.AuthToken) == 0 {
+		fmt.Println("No auth token found. Use /auth to authenticate, or pass --token.")
 	}
 
 	d.printBanner()
@@ -123,6 +126,18 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 		case "/sc clear":
 			d.cfg.ScParams = ""
 			fmt.Println("SC params cleared.")
+			continue
+		case "/auth":
+			d.handleAuth(ctx)
+			continue
+		case "/auth status":
+			d.printAuthStatus()
+			continue
+		case "/auth logout":
+			os.Remove(client.TokenStorePath())
+			d.cfg.AuthToken = ""
+			d.chatClient.SetAuthToken("")
+			fmt.Println("Logged out. Token cleared.")
 			continue
 		}
 
@@ -507,6 +522,9 @@ func (d *Daemon) printHelp() {
 	fmt.Println("  /sc            - Show current sc params")
 	fmt.Println("  /sc <params>   - Set sc params")
 	fmt.Println("  /sc clear      - Clear sc params")
+	fmt.Println("  /auth          - Authenticate via browser OAuth")
+	fmt.Println("  /auth status   - Show token status")
+	fmt.Println("  /auth logout   - Clear saved token")
 	fmt.Println("  /debug [on|off]- Toggle debug logging")
 	fmt.Println("  /quit          - Exit")
 	fmt.Println()
@@ -540,6 +558,75 @@ func (d *Daemon) readMultiLineInput(line *liner.State) (string, error) {
 		}
 		parts = append(parts, cont)
 		return strings.Join(parts, "\n"), nil
+	}
+}
+
+func (d *Daemon) handleAuth(ctx context.Context) {
+	oauth := client.NewOAuthClient(d.cfg.Backend, d.logger)
+	token, err := oauth.Authorize(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[error] authentication failed: %s\n", err)
+		return
+	}
+
+	if err := client.SaveToken(token); err != nil {
+		fmt.Fprintf(os.Stderr, "[error] saving token: %s\n", err)
+	}
+
+	d.cfg.AuthToken = token.AccessToken
+	d.chatClient.SetAuthToken(token.AccessToken)
+	d.chatClient.SetUseRestAPI(true)
+	fmt.Println("Authenticated successfully. Token saved.")
+}
+
+func (d *Daemon) printAuthStatus() {
+	token, err := client.LoadToken()
+	if err != nil {
+		fmt.Println("No saved token.")
+		return
+	}
+	expired := token.ExpiresAt > 0 && time.Now().Unix() > token.ExpiresAt
+	status := "valid"
+	if expired {
+		status = "expired"
+	}
+	hasRefresh := "no"
+	if len(token.RefreshToken) > 0 {
+		hasRefresh = "yes"
+	}
+	fmt.Printf("Token status: %s\n", status)
+	fmt.Printf("Refresh token: %s\n", hasRefresh)
+	if token.ExpiresAt > 0 {
+		fmt.Printf("Expires: %s\n", time.Unix(token.ExpiresAt, 0).Format(time.RFC3339))
+	}
+}
+
+func (d *Daemon) tryRestoreAuth() {
+	if len(d.cfg.AuthToken) > 0 {
+		return
+	}
+
+	token, err := client.LoadToken()
+	if err != nil {
+		return
+	}
+
+	expired := token.ExpiresAt > 0 && time.Now().Unix() > token.ExpiresAt
+	if expired && len(token.RefreshToken) > 0 {
+		oauth := client.NewOAuthClient(d.cfg.Backend, d.logger)
+		refreshed, err := oauth.RefreshAccessToken(token.ClientID, token.RefreshToken)
+		if err != nil {
+			d.logger.Debug("auto-refresh failed", "error", err)
+			return
+		}
+		client.SaveToken(refreshed)
+		token = refreshed
+	}
+
+	if len(token.AccessToken) > 0 {
+		d.cfg.AuthToken = token.AccessToken
+		d.chatClient.SetAuthToken(token.AccessToken)
+		d.chatClient.SetUseRestAPI(true)
 	}
 }
 
