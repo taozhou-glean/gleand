@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/nickolasclarke/gleand/internal/config"
-	"github.com/nickolasclarke/gleand/internal/daemon"
+	"github.com/taozhou/gleand/internal/config"
+	"github.com/taozhou/gleand/internal/daemon"
 )
 
-var version = "dev"
+var version = config.Version
 
 func main() {
 	var (
@@ -79,6 +79,7 @@ func main() {
 	}
 
 	d := daemon.New(cfg, logger)
+	d.Version = version
 
 	var runErr error
 	if *interactive || *chatID != "" {

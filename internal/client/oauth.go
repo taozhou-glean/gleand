@@ -18,12 +18,11 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/taozhou/gleand/internal/config"
 )
 
-const (
-	softwareID      = "gleand"
-	softwareVersion = "0.0.1"
-)
+const softwareID = "gleand"
 
 type OAuthClient struct {
 	baseURL string
@@ -58,7 +57,7 @@ func (o *OAuthClient) registerClient(redirectURI string) (*registrationResponse,
 		"token_endpoint_auth_method": "none",
 		"scope":                      "openid offline_access search chat",
 		"software_id":                softwareID,
-		"software_version":           softwareVersion,
+		"software_version":           config.Version,
 	}
 
 	body, _ := json.Marshal(reqBody)

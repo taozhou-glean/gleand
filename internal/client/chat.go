@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+
+	"github.com/taozhou/gleand/internal/config"
 )
 
 type ChatClient struct {
@@ -194,7 +196,7 @@ func (c *ChatClient) sendChatRequest(req ChatRequest) (*ChatResponse, error) {
 func (c *ChatClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.authToken)
-	req.Header.Set("X-Glean-Client", "gleand/0.1.0")
+	req.Header.Set("X-Glean-Client", "gleand/"+config.Version)
 }
 
 func (c *ChatClient) FetchModels() ([]ModelSet, error) {

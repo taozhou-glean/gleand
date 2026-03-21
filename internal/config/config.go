@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const Version = "0.0.1"
+
 // Config holds daemon configuration.
 type Config struct {
 	// Backend is the Glean backend URL (e.g., "https://scio-prod-be.glean.com").

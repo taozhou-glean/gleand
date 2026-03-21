@@ -7,14 +7,15 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/peterh/liner"
 
-	"github.com/nickolasclarke/gleand/internal/client"
-	"github.com/nickolasclarke/gleand/internal/tools"
+	"github.com/taozhou/gleand/internal/client"
+	"github.com/taozhou/gleand/internal/tools"
 )
 
 func historyPath() string {
@@ -302,12 +303,17 @@ func (d *Daemon) streamAndHandle(ctx context.Context, req client.ChatRequest, ro
 	defer streamCancel()
 
 	cancelled := false
-	esc := newEscWatcher(func() {
-		cancelled = true
-		streamCancel()
-	})
-	esc.Start()
-	defer esc.Stop()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		select {
+		case <-sigCh:
+			cancelled = true
+			streamCancel()
+		case <-streamCtx.Done():
+		}
+		signal.Stop(sigCh)
+	}()
 
 	respCh, errCh := d.getChatClient().StreamChatRequest(streamCtx, req)
 
@@ -352,7 +358,7 @@ func (d *Daemon) streamAndHandle(ctx context.Context, req client.ChatRequest, ro
 	}
 
 	spin.Stop()
-	esc.Stop()
+	signal.Stop(sigCh)
 
 	if cancelled {
 		fmt.Print("\n\033[2m[cancelled]\033[0m\n")
@@ -489,6 +495,7 @@ func (d *Daemon) printBanner() {
 	fmt.Println("╔══════════════════════════════════════════════╗")
 	fmt.Println("║            gleand interactive mode           ║")
 	fmt.Println("╠══════════════════════════════════════════════╣")
+	fmt.Printf("║  Version:  %-33s║\n", d.Version)
 	fmt.Printf("║  Backend:  %-33s║\n", d.cfg.Backend)
 	fmt.Printf("║  Device:   %-33s║\n", truncateStr(d.cfg.DeviceName, 33))
 	fmt.Printf("║  Tools:    %-33s║\n", fmt.Sprintf("%d registered", len(d.registry.Definitions())))

@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nickolasclarke/gleand/internal/client"
-	"github.com/nickolasclarke/gleand/internal/config"
-	"github.com/nickolasclarke/gleand/internal/tools"
+	"github.com/taozhou/gleand/internal/client"
+	"github.com/taozhou/gleand/internal/config"
+	"github.com/taozhou/gleand/internal/tools"
 )
 
 type Daemon struct {
@@ -27,6 +27,7 @@ type Daemon struct {
 	resumeChatID   string
 	modelSetID     string
 	cachedModels   []client.ModelSet
+	Version        string
 }
 
 type sessionState struct {
