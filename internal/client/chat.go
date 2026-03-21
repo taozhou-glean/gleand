@@ -200,7 +200,11 @@ func (c *ChatClient) setHeaders(req *http.Request) {
 }
 
 func (c *ChatClient) FetchModels() ([]ModelSet, error) {
-	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/config", bytes.NewReader([]byte("{}")))
+	configPath := "/api/v1/config"
+	if c.useRestAPI {
+		configPath = "/rest/api/v1/config"
+	}
+	httpReq, err := http.NewRequest("POST", c.baseURL+configPath, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
