@@ -52,6 +52,8 @@ func main() {
 
 	if *scParams != "" {
 		cfg.ScParams = *scParams
+	} else if len(cfg.ScParams) == 0 {
+		cfg.ScParams = "co.enable_client_tools=1,db.py_agents_service_name=pyagents-glean-exp-129,co.lo.enable_ai_coding_assistant_native_tool=false"
 	}
 	cfg.Debug = *debug
 
