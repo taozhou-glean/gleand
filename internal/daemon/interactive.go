@@ -39,7 +39,7 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 	line := liner.NewLiner()
 	defer line.Close()
 	line.SetCtrlCAborts(true)
-	line.SetMultiLineMode(false)
+	line.SetMultiLineMode(true)
 
 	if f, err := os.Open(historyPath()); err == nil {
 		line.ReadHistory(f)
@@ -61,7 +61,7 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 
 	for {
 		fmt.Println()
-		input, err := line.Prompt("gleand> ")
+		input, err := d.readMultiLineInput(line)
 		if err == liner.ErrPromptAborted || err == io.EOF {
 			fmt.Println("Goodbye.")
 			return nil
@@ -70,8 +70,7 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 			return fmt.Errorf("reading input: %w", err)
 		}
 
-		input = strings.TrimSpace(input)
-		if input == "" {
+		if len(input) == 0 {
 			continue
 		}
 
@@ -514,6 +513,34 @@ func (d *Daemon) printHelp() {
 	fmt.Println("Type any message to send to Glean Assistant.")
 	fmt.Println("If the assistant wants to use a local tool, it will")
 	fmt.Println("be executed automatically and results sent back.")
+}
+
+func (d *Daemon) readMultiLineInput(line *liner.State) (string, error) {
+	first, err := line.Prompt("gleand> ")
+	if err != nil {
+		return "", err
+	}
+	first = strings.TrimSpace(first)
+	if !strings.HasSuffix(first, "\\") {
+		return first, nil
+	}
+
+	var parts []string
+	parts = append(parts, strings.TrimSuffix(first, "\\"))
+
+	for {
+		cont, err := line.Prompt("   ...> ")
+		if err != nil {
+			return strings.Join(parts, "\n"), nil
+		}
+		cont = strings.TrimSpace(cont)
+		if strings.HasSuffix(cont, "\\") {
+			parts = append(parts, strings.TrimSuffix(cont, "\\"))
+			continue
+		}
+		parts = append(parts, cont)
+		return strings.Join(parts, "\n"), nil
+	}
 }
 
 func truncateStr(s string, max int) string {
