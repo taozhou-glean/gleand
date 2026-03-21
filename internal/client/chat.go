@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"time"
 )
 
 type ChatClient struct {
@@ -21,12 +20,10 @@ type ChatClient struct {
 
 func NewChatClient(baseURL, authToken string, logger *slog.Logger) *ChatClient {
 	return &ChatClient{
-		baseURL:   baseURL,
-		authToken: authToken,
-		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
-		},
-		logger: logger,
+		baseURL:    baseURL,
+		authToken:  authToken,
+		httpClient: &http.Client{},
+		logger:     logger,
 	}
 }
 

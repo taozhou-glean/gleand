@@ -114,10 +114,27 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 		case "/model":
 			d.printCurrentModel()
 			continue
+		case "/sc":
+			if len(d.cfg.ScParams) == 0 {
+				fmt.Println("No sc params set.")
+			} else {
+				fmt.Printf("SC: %s\n", d.cfg.ScParams)
+			}
+			continue
+		case "/sc clear":
+			d.cfg.ScParams = ""
+			fmt.Println("SC params cleared.")
+			continue
 		}
 
 		if strings.HasPrefix(input, "/model ") {
 			d.handleModelCommand(strings.TrimPrefix(input, "/model "))
+			continue
+		}
+
+		if strings.HasPrefix(input, "/sc ") {
+			d.cfg.ScParams = strings.TrimPrefix(input, "/sc ")
+			fmt.Printf("SC set to: %s\n", d.cfg.ScParams)
 			continue
 		}
 
@@ -488,6 +505,9 @@ func (d *Daemon) printHelp() {
 	fmt.Println("  /model <ID>    - Switch to a model")
 	fmt.Println("  /new           - Start a new chat session")
 	fmt.Println("  /id            - Show current chat ID")
+	fmt.Println("  /sc            - Show current sc params")
+	fmt.Println("  /sc <params>   - Set sc params")
+	fmt.Println("  /sc clear      - Clear sc params")
 	fmt.Println("  /debug [on|off]- Toggle debug logging")
 	fmt.Println("  /quit          - Exit")
 	fmt.Println()
