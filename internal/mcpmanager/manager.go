@@ -16,11 +16,12 @@ import (
 )
 
 type ServerConfig struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
-	URL     string   `json:"url,omitempty"`
-	Enabled bool     `json:"enabled"`
+	Name         string   `json:"name"`
+	Command      string   `json:"command"`
+	Args         []string `json:"args,omitempty"`
+	URL          string   `json:"url,omitempty"`
+	Enabled      bool     `json:"enabled"`
+	EnabledTools []string `json:"enabledTools,omitempty"`
 }
 
 type connectedServer struct {
@@ -142,6 +143,64 @@ func (m *Manager) Disable(name string) error {
 	defer m.mu.Unlock()
 	m.disconnectLocked(name)
 	return m.setEnabled(name, false)
+}
+
+func (m *Manager) SetEnabledTools(name string, toolNames []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, c := range m.configs {
+		if c.Name == name {
+			m.configs[i].EnabledTools = toolNames
+			return m.SaveConfigs()
+		}
+	}
+	return fmt.Errorf("server %q not found", name)
+}
+
+func (m *Manager) ToggleTool(name, toolName string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, c := range m.configs {
+		if c.Name == name {
+			for j, t := range c.EnabledTools {
+				if t == toolName {
+					m.configs[i].EnabledTools = append(c.EnabledTools[:j], c.EnabledTools[j+1:]...)
+					m.SaveConfigs()
+					return false, nil
+				}
+			}
+			m.configs[i].EnabledTools = append(m.configs[i].EnabledTools, toolName)
+			m.SaveConfigs()
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("server %q not found", name)
+}
+
+func (m *Manager) GetAllTools(name string) []*mcp.Tool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if srv, ok := m.servers[name]; ok {
+		return srv.tools
+	}
+	return nil
+}
+
+func (m *Manager) isToolEnabled(serverName, toolName string) bool {
+	for _, c := range m.configs {
+		if c.Name == serverName {
+			if len(c.EnabledTools) == 0 {
+				return true
+			}
+			for _, t := range c.EnabledTools {
+				if t == toolName {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Manager) setEnabled(name string, enabled bool) error {
@@ -280,7 +339,13 @@ func (m *Manager) ConnectedTools() map[string][]*mcp.Tool {
 	defer m.mu.Unlock()
 	result := make(map[string][]*mcp.Tool)
 	for name, srv := range m.servers {
-		result[name] = srv.tools
+		var filtered []*mcp.Tool
+		for _, t := range srv.tools {
+			if m.isToolEnabled(name, t.Name) {
+				filtered = append(filtered, t)
+			}
+		}
+		result[name] = filtered
 	}
 	return result
 }
@@ -291,6 +356,9 @@ func (m *Manager) RegisterMCPTools(registry *tools.Registry) {
 
 	for serverName, srv := range m.servers {
 		for _, t := range srv.tools {
+			if !m.isToolEnabled(serverName, t.Name) {
+				continue
+			}
 			registry.Register(newMCPToolAdapter(serverName, t, m))
 		}
 	}
@@ -310,62 +378,64 @@ func (a *mcpToolAdapter) Definition() tools.ToolDefinition {
 	toolID := fmt.Sprintf("mcp_%s_%s", a.serverName, a.tool.Name)
 	toolID = strings.ReplaceAll(toolID, "-", "_")
 
-	schema := tools.ToolSchema{
-		Type:       "object",
-		Properties: make(map[string]tools.Property),
-	}
-
-	if a.tool.InputSchema != nil {
-		schemaBytes, _ := json.Marshal(a.tool.InputSchema)
-		var schemaMap map[string]any
-		json.Unmarshal(schemaBytes, &schemaMap)
-
-		if props, ok := schemaMap["properties"].(map[string]any); ok {
-			for name, prop := range props {
-				propMap, ok := prop.(map[string]any)
-				if !ok {
-					continue
-				}
-				p := tools.Property{}
-				switch t := propMap["type"].(type) {
-				case string:
-					p.Type = t
-				case []any:
-					for _, v := range t {
-						if s, ok := v.(string); ok && s != "null" {
-							p.Type = s
-							break
-						}
-					}
-				}
-				if p.Type == "" {
-					p.Type = "string"
-				}
-				if d, ok := propMap["description"].(string); ok {
-					p.Description = d
-				}
-				schema.Properties[name] = p
-			}
-		}
-		if req, ok := schemaMap["required"].([]any); ok {
-			for _, r := range req {
-				if s, ok := r.(string); ok {
-					schema.Required = append(schema.Required, s)
-				}
-			}
-		}
-	}
-
 	desc := a.tool.Description
 	if desc == "" {
 		desc = fmt.Sprintf("MCP tool from %s", a.serverName)
 	}
 
+	rawSchema := map[string]any{"type": "object", "properties": map[string]any{}}
+	if a.tool.InputSchema != nil {
+		schemaBytes, _ := json.Marshal(a.tool.InputSchema)
+		json.Unmarshal(schemaBytes, &rawSchema)
+		sanitizeSchema(rawSchema)
+	}
+
 	return tools.ToolDefinition{
-		Name:        a.tool.Name,
-		ToolID:      toolID,
-		Description: fmt.Sprintf("[%s] %s", a.serverName, desc),
-		InputSchema: schema,
+		Name:           a.tool.Name,
+		ToolID:         toolID,
+		Description:    fmt.Sprintf("[%s] %s", a.serverName, desc),
+		RawInputSchema: rawSchema,
+	}
+}
+
+func sanitizeSchema(schema map[string]any) {
+	if schema["type"] == nil || schema["type"] == "" {
+		schema["type"] = "object"
+	}
+	if schema["properties"] == nil {
+		schema["properties"] = map[string]any{}
+	}
+
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, prop := range props {
+		propMap, ok := prop.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		switch t := propMap["type"].(type) {
+		case []any:
+			for _, v := range t {
+				if s, ok := v.(string); ok && s != "null" {
+					propMap["type"] = s
+					break
+				}
+			}
+		case string:
+		default:
+			propMap["type"] = "string"
+		}
+
+		if propMap["type"] == "" {
+			propMap["type"] = "string"
+		}
+
+		if propMap["type"] == "array" && propMap["items"] == nil {
+			propMap["items"] = map[string]any{"type": "string"}
+		}
 	}
 }
 

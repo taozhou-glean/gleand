@@ -19,10 +19,11 @@ type Property struct {
 }
 
 type ToolDefinition struct {
-	Name        string     `json:"name"`
-	ToolID      string     `json:"toolId"`
-	Description string     `json:"description"`
-	InputSchema ToolSchema `json:"input_schema"`
+	Name           string         `json:"name"`
+	ToolID         string         `json:"toolId"`
+	Description    string         `json:"description"`
+	InputSchema    ToolSchema     `json:"input_schema"`
+	RawInputSchema map[string]any `json:"raw_input_schema,omitempty"`
 }
 
 type ToolResult struct {

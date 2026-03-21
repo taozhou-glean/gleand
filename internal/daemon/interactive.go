@@ -12,9 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/peterh/liner"
 
 	"github.com/taozhou/gleand/internal/client"
+	"github.com/taozhou/gleand/internal/mcpmanager"
 	"github.com/taozhou/gleand/internal/tools"
 )
 
@@ -466,8 +468,12 @@ func (d *Daemon) buildClientTools() []client.ClientTool {
 	defs := d.registry.Definitions()
 	clientTools := make([]client.ClientTool, 0, len(defs))
 	for _, def := range defs {
-		schema := toolSchemaToMap(def.InputSchema)
-		// Ensure schema always has "type":"object" — backend requires it
+		var schema map[string]any
+		if def.RawInputSchema != nil {
+			schema = def.RawInputSchema
+		} else {
+			schema = toolSchemaToMap(def.InputSchema)
+		}
 		if schema["type"] == nil || schema["type"] == "" {
 			schema["type"] = "object"
 		}
@@ -616,6 +622,8 @@ func (d *Daemon) printHelp() {
 	fmt.Println("  /mcp addurl <name> <url>     - Add HTTP server")
 	fmt.Println("  /mcp enable|disable <name>   - Toggle server")
 	fmt.Println("  /mcp connect|remove <name>   - Connect/remove")
+	fmt.Println("  /mcp toggle <name>           - Show/toggle tools")
+	fmt.Println("  /mcp toggle <name> <tool>    - Toggle a tool")
 	fmt.Println("  /debug [on|off]- Toggle debug logging")
 	fmt.Println("  /quit          - Exit")
 	fmt.Println()
@@ -752,9 +760,99 @@ func (d *Daemon) handleMCPCommand(ctx context.Context, args string) {
 			fmt.Printf("  %-24s %s\n", t.Name, t.Description)
 		}
 
+	case "toggle":
+		if len(parts) < 2 {
+			fmt.Println("Usage: /mcp toggle <name> [tool_name]")
+			return
+		}
+		name := parts[1]
+
+		allTools := d.MCP.GetAllTools(name)
+		if allTools == nil {
+			fmt.Printf("Server %q is not connected. Use /mcp connect %s first.\n", name, name)
+			return
+		}
+
+		if len(parts) >= 3 {
+			toolName := parts[2]
+			enabled, err := d.MCP.ToggleTool(name, toolName)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[error] %s\n", err)
+				return
+			}
+			if enabled {
+				fmt.Printf("Enabled tool %q on %s\n", toolName, name)
+			} else {
+				fmt.Printf("Disabled tool %q on %s\n", toolName, name)
+			}
+			d.rebuildToolRegistry()
+			return
+		}
+
+		d.printMCPToolToggle(name, allTools)
+
 	default:
 		fmt.Printf("Unknown MCP command: %s\nUse /mcp for help.\n", cmd)
 	}
+}
+
+func (d *Daemon) printMCPToolToggle(name string, allTools []*mcp.Tool) {
+	configs := d.MCP.Configs()
+	var cfg *mcpmanager.ServerConfig
+	for _, c := range configs {
+		if c.Name == name {
+			c := c
+			cfg = &c
+			break
+		}
+	}
+
+	fmt.Printf("\nTools for %s (toggle with /mcp toggle %s <tool_name>):\n", name, name)
+	for _, t := range allTools {
+		enabled := true
+		if cfg != nil && len(cfg.EnabledTools) > 0 {
+			enabled = false
+			for _, et := range cfg.EnabledTools {
+				if et == t.Name {
+					enabled = true
+					break
+				}
+			}
+		}
+		marker := "\033[32m✓\033[0m"
+		if !enabled {
+			marker = "\033[31m✗\033[0m"
+		}
+		desc := t.Description
+		if len(desc) > 45 {
+			desc = desc[:45] + "..."
+		}
+		fmt.Printf("  %s %-28s %s\n", marker, t.Name, desc)
+	}
+	enabledCount := 0
+	for _, t := range allTools {
+		if cfg == nil || len(cfg.EnabledTools) == 0 {
+			enabledCount = len(allTools)
+			break
+		}
+		for _, et := range cfg.EnabledTools {
+			if et == t.Name {
+				enabledCount++
+				break
+			}
+		}
+	}
+	fmt.Printf("\n  %d/%d tools enabled\n", enabledCount, len(allTools))
+}
+
+func (d *Daemon) rebuildToolRegistry() {
+	d.registry = tools.NewRegistry()
+	d.registry.Register(tools.NewRunCommandTool(d.cfg.MaxCommandTimeout, d.cfg.BlockedCommands))
+	d.registry.Register(tools.NewReadFileTool(d.cfg.AllowedPaths))
+	d.registry.Register(tools.NewWriteFileTool(d.cfg.AllowedPaths))
+	d.registry.Register(tools.NewListDirectoryTool(d.cfg.AllowedPaths))
+	d.registry.Register(tools.NewSystemInfoTool())
+	d.MCP.RegisterMCPTools(d.registry)
 }
 
 func (d *Daemon) readMultiLineInput(line *liner.State) (string, error) {
