@@ -194,7 +194,8 @@ func (d *Daemon) handleModelCommand(arg string) {
 
 	models, err := d.fetchModels()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[error] failed to fetch models: %s\n", err)
+		d.modelSetID = arg
+		fmt.Printf("Model set to: %s (unvalidated — model list unavailable)\n", arg)
 		return
 	}
 
@@ -210,7 +211,8 @@ func (d *Daemon) handleModelCommand(arg string) {
 		}
 	}
 
-	fmt.Printf("Unknown model: %s\nUse /model list to see available models.\n", arg)
+	d.modelSetID = arg
+	fmt.Printf("Model set to: %s (not in known models list)\n", arg)
 }
 
 func (d *Daemon) printCurrentModel() {

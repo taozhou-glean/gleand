@@ -212,6 +212,9 @@ func (c *ChatClient) FetchModels() ([]ModelSet, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("model listing requires session auth (not available with OAuth). Use /model <MODEL_ID> to set directly")
+	}
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("config API returned %d: %s", resp.StatusCode, string(bodyBytes))

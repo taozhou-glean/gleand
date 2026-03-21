@@ -55,7 +55,7 @@ func (o *OAuthClient) registerClient(redirectURI string) (*registrationResponse,
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
 		"token_endpoint_auth_method": "none",
-		"scope":                      "openid offline_access search chat",
+		"scope":                      "openid offline_access search chat web_api",
 		"software_id":                softwareID,
 		"software_version":           config.Version,
 	}
@@ -106,7 +106,7 @@ func (o *OAuthClient) Authorize(ctx context.Context) (*TokenData, error) {
 			"state":                 {state},
 			"code_challenge":        {challenge},
 			"code_challenge_method": {"S256"},
-			"scope":                 {"openid offline_access search chat"},
+			"scope":                 {"openid offline_access search chat web_api"},
 		}.Encode(),
 	)
 
