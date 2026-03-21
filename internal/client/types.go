@@ -81,3 +81,28 @@ type DeviceHeartbeat struct {
 	DeviceName string `json:"deviceName"`
 	Status     string `json:"status"`
 }
+
+type ConfigResponse struct {
+	ClientConfig *ClientConfigData `json:"clientConfig,omitempty"`
+}
+
+type ClientConfigData struct {
+	Assistant *AssistantConfig `json:"assistant,omitempty"`
+}
+
+type AssistantConfig struct {
+	AvailableModelSets []ModelSet `json:"availableModelSets,omitempty"`
+}
+
+type ModelSet struct {
+	ID               string     `json:"id,omitempty"`
+	AgenticModel     *ModelInfo `json:"agenticModel,omitempty"`
+	FastAgenticModel *ModelInfo `json:"fastAgenticModel,omitempty"`
+	IsRecommended    bool       `json:"isRecommended,omitempty"`
+	IsPromoted       bool       `json:"isPromoted,omitempty"`
+}
+
+type ModelInfo struct {
+	DisplayName string `json:"displayName,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+}

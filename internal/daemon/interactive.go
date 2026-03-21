@@ -111,6 +111,14 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 		case "/debug":
 			fmt.Printf("Debug mode: %s\n", map[bool]string{true: "on", false: "off"}[d.cfg.Debug])
 			continue
+		case "/model":
+			d.printCurrentModel()
+			continue
+		}
+
+		if strings.HasPrefix(input, "/model ") {
+			d.handleModelCommand(strings.TrimPrefix(input, "/model "))
+			continue
 		}
 
 		newChatID, err := d.sendChat(ctx, chatID, input)
@@ -124,20 +132,120 @@ func (d *Daemon) RunInteractive(ctx context.Context) error {
 	}
 }
 
+func (d *Daemon) agentConfigWithModel() map[string]any {
+	if len(d.modelSetID) == 0 {
+		return nil
+	}
+	return map[string]any{"modelSetId": d.modelSetID}
+}
+
+func (d *Daemon) handleModelCommand(arg string) {
+	arg = strings.TrimSpace(arg)
+
+	if arg == "list" || arg == "ls" {
+		d.printAvailableModels()
+		return
+	}
+
+	models, err := d.fetchModels()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[error] failed to fetch models: %s\n", err)
+		return
+	}
+
+	for _, m := range models {
+		if strings.EqualFold(m.ID, arg) {
+			d.modelSetID = m.ID
+			displayName := m.ID
+			if m.AgenticModel != nil && len(m.AgenticModel.DisplayName) > 0 {
+				displayName = m.AgenticModel.DisplayName
+			}
+			fmt.Printf("Model set to: %s (%s)\n", m.ID, displayName)
+			return
+		}
+	}
+
+	fmt.Printf("Unknown model: %s\nUse /model list to see available models.\n", arg)
+}
+
+func (d *Daemon) printCurrentModel() {
+	if len(d.modelSetID) == 0 {
+		fmt.Println("No model set (using server default).")
+		fmt.Println("Use /model list to see available models.")
+		return
+	}
+	fmt.Printf("Current model: %s\n", d.modelSetID)
+}
+
+func (d *Daemon) printAvailableModels() {
+	models, err := d.fetchModels()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[error] failed to fetch models: %s\n", err)
+		return
+	}
+	if len(models) == 0 {
+		fmt.Println("No models available.")
+		return
+	}
+
+	fmt.Println("\nAvailable models:")
+	for _, m := range models {
+		marker := "  "
+		if m.ID == d.modelSetID {
+			marker = "▸ "
+		}
+
+		displayName := ""
+		if m.AgenticModel != nil && len(m.AgenticModel.DisplayName) > 0 {
+			displayName = m.AgenticModel.DisplayName
+		}
+
+		tags := ""
+		if m.IsRecommended {
+			tags += " [recommended]"
+		}
+		if m.IsPromoted {
+			tags += " [promoted]"
+		}
+
+		if len(displayName) > 0 {
+			fmt.Printf("%s%-28s %s%s\n", marker, m.ID, displayName, tags)
+		} else {
+			fmt.Printf("%s%s%s\n", marker, m.ID, tags)
+		}
+	}
+	fmt.Println("\nUsage: /model <MODEL_ID>")
+}
+
+func (d *Daemon) fetchModels() ([]client.ModelSet, error) {
+	if len(d.cachedModels) > 0 {
+		return d.cachedModels, nil
+	}
+	models, err := d.getChatClient().FetchModels()
+	if err != nil {
+		return nil, err
+	}
+	d.cachedModels = models
+	return models, nil
+}
+
 func (d *Daemon) sendChat(ctx context.Context, chatID, message string) (string, error) {
 	clientTools := d.buildClientTools()
 
+	agentCfg := d.agentConfigWithModel()
 	req := client.ChatRequest{
 		ChatID: chatID,
 		Messages: []client.ChatMessage{
 			{
-				Author:    "USER",
-				Fragments: []client.ChatMessageFragment{{Text: message}},
-				Platform:  "DESKTOP",
+				Author:      "USER",
+				Fragments:   []client.ChatMessageFragment{{Text: message}},
+				Platform:    "DESKTOP",
+				AgentConfig: agentCfg,
 			},
 		},
 		SaveChat:    true,
 		ClientTools: clientTools,
+		AgentConfig: agentCfg,
 		Sc:          d.cfg.ScParams,
 		Stream:      true,
 	}
@@ -159,7 +267,18 @@ func (d *Daemon) streamAndHandle(ctx context.Context, req client.ChatRequest, ro
 		spin.Start("processing tool results...")
 	}
 
-	respCh, errCh := d.getChatClient().StreamChatRequest(req)
+	streamCtx, streamCancel := context.WithCancel(ctx)
+	defer streamCancel()
+
+	cancelled := false
+	esc := newEscWatcher(func() {
+		cancelled = true
+		streamCancel()
+	})
+	esc.Start()
+	defer esc.Stop()
+
+	respCh, errCh := d.getChatClient().StreamChatRequest(streamCtx, req)
 
 	var lastChatID string
 	var allText strings.Builder
@@ -202,6 +321,16 @@ func (d *Daemon) streamAndHandle(ctx context.Context, req client.ChatRequest, ro
 	}
 
 	spin.Stop()
+	esc.Stop()
+
+	if cancelled {
+		fmt.Print("\n\033[2m[cancelled]\033[0m\n")
+		if len(lastChatID) > 0 {
+			go d.getChatClient().CancelChat(lastChatID)
+		}
+		<-errCh
+		return lastChatID, nil
+	}
 
 	if err := <-errCh; err != nil {
 		return lastChatID, err
@@ -353,13 +482,14 @@ func (d *Daemon) printTools() {
 
 func (d *Daemon) printHelp() {
 	fmt.Println("\nCommands:")
-	fmt.Println("  /tools      - List registered tools")
-	fmt.Println("  /new        - Start a new chat session")
-	fmt.Println("  /id         - Show current chat ID")
-	fmt.Println("  /debug      - Show debug mode status")
-	fmt.Println("  /debug on   - Enable debug logging")
-	fmt.Println("  /debug off  - Disable debug logging")
-	fmt.Println("  /quit       - Exit")
+	fmt.Println("  /tools         - List registered tools")
+	fmt.Println("  /model         - Show current model")
+	fmt.Println("  /model list    - List available models")
+	fmt.Println("  /model <ID>    - Switch to a model")
+	fmt.Println("  /new           - Start a new chat session")
+	fmt.Println("  /id            - Show current chat ID")
+	fmt.Println("  /debug [on|off]- Toggle debug logging")
+	fmt.Println("  /quit          - Exit")
 	fmt.Println()
 	fmt.Println("Type any message to send to Glean Assistant.")
 	fmt.Println("If the assistant wants to use a local tool, it will")

@@ -25,6 +25,8 @@ type Daemon struct {
 	mu             sync.Mutex
 	activeSessions map[string]*sessionState
 	resumeChatID   string
+	modelSetID     string
+	cachedModels   []client.ModelSet
 }
 
 type sessionState struct {

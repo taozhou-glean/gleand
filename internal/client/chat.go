@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,7 +64,7 @@ func (c *ChatClient) SendToolResults(chatID string, results []ClientToolUseResul
 	return c.SendMessage(chatID, fragments, agentConfig)
 }
 
-func (c *ChatClient) StreamChatRequest(req ChatRequest) (<-chan ChatResponse, <-chan error) {
+func (c *ChatClient) StreamChatRequest(ctx context.Context, req ChatRequest) (<-chan ChatResponse, <-chan error) {
 	responseCh := make(chan ChatResponse, 10)
 	errCh := make(chan error, 1)
 
@@ -79,7 +80,7 @@ func (c *ChatClient) StreamChatRequest(req ChatRequest) (<-chan ChatResponse, <-
 			return
 		}
 
-		httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/chat", bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/chat", bytes.NewReader(body))
 		if err != nil {
 			errCh <- fmt.Errorf("creating request: %w", err)
 			return
@@ -88,6 +89,9 @@ func (c *ChatClient) StreamChatRequest(req ChatRequest) (<-chan ChatResponse, <-
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			errCh <- fmt.Errorf("sending request: %w", err)
 			return
 		}
@@ -103,6 +107,9 @@ func (c *ChatClient) StreamChatRequest(req ChatRequest) (<-chan ChatResponse, <-
 		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
 		for scanner.Scan() {
+			if ctx.Err() != nil {
+				return
+			}
 			line := scanner.Text()
 			if line == "" {
 				continue
@@ -116,12 +123,32 @@ func (c *ChatClient) StreamChatRequest(req ChatRequest) (<-chan ChatResponse, <-
 			responseCh <- chatResp
 		}
 
-		if err := scanner.Err(); err != nil {
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
 			errCh <- fmt.Errorf("reading stream: %w", err)
 		}
 	}()
 
 	return responseCh, errCh
+}
+
+func (c *ChatClient) CancelChat(chatID string) error {
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/chat/"+chatID+"/cancel", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return fmt.Errorf("creating cancel request: %w", err)
+	}
+	c.setHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("sending cancel request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("cancel API returned %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	return nil
 }
 
 func (c *ChatClient) sendChatRequest(req ChatRequest) (*ChatResponse, error) {
@@ -159,6 +186,35 @@ func (c *ChatClient) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.authToken)
 	req.Header.Set("X-Glean-Client", "gleand/0.1.0")
+}
+
+func (c *ChatClient) FetchModels() ([]ModelSet, error) {
+	httpReq, err := http.NewRequest("POST", c.baseURL+"/api/v1/config", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	c.setHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("fetching config: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("config API returned %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var configResp ConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&configResp); err != nil {
+		return nil, fmt.Errorf("decoding config: %w", err)
+	}
+
+	if configResp.ClientConfig == nil || configResp.ClientConfig.Assistant == nil {
+		return nil, nil
+	}
+	return configResp.ClientConfig.Assistant.AvailableModelSets, nil
 }
 
 func ExtractToolRequests(resp *ChatResponse) []ClientToolUseRequest {
